@@ -1,0 +1,17 @@
+.DS_Store
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# Redundant archives and fallback data
+data/GiveMeSomeCredit.zip
+data/raw/default_credit_card_clients.csv
+data/raw/sampleEntry.csv
+outputs/archive_default_credit_card_clients/
+outputs/figures/dm_class_distribution.png
+outputs/figures/dm_missing_values.png
+outputs/figures/tmp_*.png
+outputs/tables/dm_missing_rates.csv
+outputs/tables/dm_target_distribution.csv
+outputs/tables/dm_model_scores.csv
+outputs/tables/dm_test_labels.csv
