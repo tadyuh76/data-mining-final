@@ -1,0 +1,2 @@
+rows,columns,target,positive_rate,negative_rate
+150000,12,SeriousDlqin2yrs,0.06684,0.93316

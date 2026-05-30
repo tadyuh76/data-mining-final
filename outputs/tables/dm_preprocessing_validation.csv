@@ -1,0 +1,14 @@
+check,value,status
+dataset_rows_full,150000,pass
+dataset_columns_full,12,pass
+positive_rate_full,0.06684,pass
+target_excluded_from_features,True,pass
+id_column_excluded,True,pass
+train_positive_rate,0.06684444444444444,pass
+test_positive_rate,0.06682666666666667,pass
+stratified_split_close,True,pass
+no_nan_train_after_preprocess,True,pass
+no_nan_test_after_preprocess,True,pass
+train_matrix_shape,"(112500, 10)",pass
+test_matrix_shape,"(37500, 10)",pass
+used_source_columns,"RevolvingUtilizationOfUnsecuredLines, age, NumberOfTime30-59DaysPastDueNotWorse, DebtRatio, MonthlyIncome, NumberOfOpenCreditLinesAndLoans, NumberOfTimes90DaysLate, NumberRealEstateLoansOrLines, NumberOfTime60-89DaysPastDueNotWorse, NumberOfDependents",pass
