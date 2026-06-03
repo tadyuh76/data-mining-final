@@ -18,6 +18,7 @@ from balance_cascade_pipeline import (
     ensure_dirs,
     metric_row,
     normalize_binary_target,
+    threshold_sweep,
 )
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
@@ -43,7 +44,7 @@ def model_suite(seed: int, stages: int, adaboost_estimators: int) -> dict[str, o
             random_state=seed,
         ),
         "BalanceCascade_tuned": SimpleBalanceCascadeClassifier(
-            n_stages=4,
+            n_stages=2,
             adaboost_estimators=10,
             random_state=seed,
         ),
@@ -58,12 +59,16 @@ def model_suite(seed: int, stages: int, adaboost_estimators: int) -> dict[str, o
 def stability_summary(metrics: pd.DataFrame) -> pd.DataFrame:
     summary = metrics.groupby("model").agg(
         runs=("seed", "count"),
+        threshold_mean=("threshold", "mean"),
+        threshold_std=("threshold", "std"),
         precision_mean=("precision", "mean"),
         precision_std=("precision", "std"),
         recall_mean=("recall", "mean"),
         recall_std=("recall", "std"),
         f2_mean=("f2", "mean"),
         f2_std=("f2", "std"),
+        validation_f2_mean=("validation_f2", "mean"),
+        validation_f2_std=("validation_f2", "std"),
         roc_auc_mean=("roc_auc", "mean"),
         roc_auc_std=("roc_auc", "std"),
         pr_auc_mean=("pr_auc", "mean"),
@@ -80,6 +85,7 @@ def main() -> None:
     parser.add_argument("--positive-label", default="1")
     parser.add_argument("--seeds", default="11,23,42,58,91")
     parser.add_argument("--test-size", type=float, default=0.25)
+    parser.add_argument("--validation-size", type=float, default=0.20)
     parser.add_argument("--max-categorical-cardinality", type=int, default=40)
     parser.add_argument("--max-missing-rate", type=float, default=0.80)
     parser.add_argument("--stages", type=int, default=6)
@@ -105,23 +111,55 @@ def main() -> None:
             stratify=y,
             random_state=seed,
         )
-        train_frame = X_train_raw.copy()
-        train_frame[args.target] = y_train
+        X_fit_raw, X_val_raw, y_fit, y_val = train_test_split(
+            X_train_raw,
+            y_train,
+            test_size=args.validation_size,
+            stratify=y_train,
+            random_state=seed,
+        )
+
+        train_frame = X_fit_raw.copy()
+        train_frame[args.target] = y_fit
         preprocessor, _ = build_preprocessor(
             train_frame,
             target=args.target,
             max_categorical_cardinality=args.max_categorical_cardinality,
             max_missing_rate=args.max_missing_rate,
         )
-        X_train = np.asarray(preprocessor.fit_transform(X_train_raw), dtype=float)
+        X_fit = np.asarray(preprocessor.fit_transform(X_fit_raw), dtype=float)
+        X_val = np.asarray(preprocessor.transform(X_val_raw), dtype=float)
         X_test = np.asarray(preprocessor.transform(X_test_raw), dtype=float)
 
+        val_scores_by_model: dict[str, np.ndarray] = {}
+        test_scores_by_model: dict[str, np.ndarray] = {}
+        runtimes: dict[str, float] = {}
         for name, model in model_suite(seed, args.stages, args.adaboost_estimators).items():
             start = time.perf_counter()
-            model.fit(X_train, y_train)
-            score = model.predict_proba(X_test)[:, 1]
-            row = metric_row(name, y_test, score, time.perf_counter() - start)
+            model.fit(X_fit, y_fit)
+            runtimes[name] = time.perf_counter() - start
+            val_scores_by_model[name] = model.predict_proba(X_val)[:, 1]
+            test_scores_by_model[name] = model.predict_proba(X_test)[:, 1]
+
+        thresholds = threshold_sweep(y_val, val_scores_by_model)
+        best_f2 = thresholds.sort_values(
+            ["model", "f2", "recall"],
+            ascending=[True, False, False],
+        ).groupby("model").head(1)
+
+        for _, selected in best_f2.iterrows():
+            name = str(selected["model"])
+            row = metric_row(
+                name,
+                y_test,
+                test_scores_by_model[name],
+                runtimes[name],
+                threshold=float(selected["threshold"]),
+            )
             row["seed"] = seed
+            row["validation_precision"] = float(selected["precision"])
+            row["validation_recall"] = float(selected["recall"])
+            row["validation_f2"] = float(selected["f2"])
             rows.append(row)
 
     metrics = pd.DataFrame(rows)
@@ -130,7 +168,7 @@ def main() -> None:
     summary.to_csv(tables_dir / "dm_seed_stability_summary.csv", index=False)
 
     print("Xong kiểm tra seed.")
-    print(summary[["model", "runs", "recall_mean", "recall_std", "f2_mean", "f2_std"]])
+    print(summary[["model", "runs", "threshold_mean", "recall_mean", "recall_std", "f2_mean", "f2_std"]])
 
 
 if __name__ == "__main__":

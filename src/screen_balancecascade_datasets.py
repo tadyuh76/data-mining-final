@@ -39,6 +39,22 @@ from balance_cascade_pipeline import (
 )
 
 
+def classification_metrics_at_threshold(
+    y_true: pd.Series | np.ndarray,
+    score: np.ndarray,
+    threshold: float,
+) -> dict[str, float]:
+    y_pred = (score >= threshold).astype(int)
+    return {
+        "precision": precision_score(y_true, y_pred, zero_division=0),
+        "recall": recall_score(y_true, y_pred, zero_division=0),
+        "f1": f1_score(y_true, y_pred, zero_division=0),
+        "f2": fbeta_score(y_true, y_pred, beta=2, zero_division=0),
+        "balanced_accuracy": balanced_accuracy_score(y_true, y_pred),
+        "predicted_positive_rate": float(np.mean(y_pred)),
+    }
+
+
 @dataclass(frozen=True)
 class DatasetSpec:
     name: str
@@ -60,8 +76,10 @@ def load_gmsc(project_dir: Path) -> DatasetSpec:
     )
 
 
-def load_default_credit(project_dir: Path) -> DatasetSpec:
+def load_default_credit(project_dir: Path) -> DatasetSpec | None:
     path = project_dir / "data" / "raw" / "default_credit_card_clients.csv"
+    if not path.exists():
+        return None
     df = pd.read_csv(path)
     return DatasetSpec(
         name="uci_default_credit",
@@ -175,12 +193,9 @@ def load_mammographic_mass(external_dir: Path) -> DatasetSpec | None:
 
 
 def load_specs(project_dir: Path, project_root: Path, external_dir: Path) -> list[DatasetSpec]:
-    specs: list[DatasetSpec] = [
-        load_gmsc(project_dir),
-        load_default_credit(project_dir),
-        load_breast_cancer_dataset(),
-    ]
+    specs: list[DatasetSpec] = [load_gmsc(project_dir), load_breast_cancer_dataset()]
     optional_loaders = [
+        lambda: load_default_credit(project_dir),
         lambda: load_landslide_large(project_root),
         lambda: load_bank_marketing(external_dir),
         lambda: load_german_credit(external_dir),
@@ -207,8 +222,8 @@ def model_candidates(stages: int, adaboost_estimators: int) -> dict[str, object]
             adaboost_estimators=adaboost_estimators,
             random_state=RANDOM_STATE,
         ),
-        "BalanceCascade_s4_a10": SimpleBalanceCascadeClassifier(
-            n_stages=4,
+        "BalanceCascade_s2_a10": SimpleBalanceCascadeClassifier(
+            n_stages=2,
             adaboost_estimators=10,
             random_state=RANDOM_STATE,
         ),
@@ -256,27 +271,38 @@ def evaluate_dataset(
         stratify=y,
         random_state=RANDOM_STATE,
     )
+    X_fit_raw, X_val_raw, y_fit, y_val = train_test_split(
+        X_train_raw,
+        y_train,
+        test_size=0.20,
+        stratify=y_train,
+        random_state=RANDOM_STATE,
+    )
 
-    training_frame = X_train_raw.copy()
-    training_frame[spec.target] = y_train.values
+    training_frame = X_fit_raw.copy()
+    training_frame[spec.target] = y_fit.values
     preprocessor, used_cols = build_preprocessor(
         training_frame,
         target=spec.target,
         max_categorical_cardinality=30,
         max_missing_rate=0.80,
     )
-    X_train = np.asarray(preprocessor.fit_transform(X_train_raw), dtype=float)
+    X_fit = np.asarray(preprocessor.fit_transform(X_fit_raw), dtype=float)
+    X_val = np.asarray(preprocessor.transform(X_val_raw), dtype=float)
     X_test = np.asarray(preprocessor.transform(X_test_raw), dtype=float)
 
     rows: list[dict[str, object]] = []
-    scores_by_model: dict[str, np.ndarray] = {}
+    val_scores_by_model: dict[str, np.ndarray] = {}
+    test_scores_by_model: dict[str, np.ndarray] = {}
 
     for model_name, model in model_candidates(stages, adaboost_estimators).items():
         fitted = clone(model)
-        fitted.fit(X_train, y_train)
-        score = fitted.predict_proba(X_test)[:, 1]
-        scores_by_model[model_name] = score
-        y_pred = (score >= 0.50).astype(int)
+        fitted.fit(X_fit, y_fit)
+        val_score = fitted.predict_proba(X_val)[:, 1]
+        test_score = fitted.predict_proba(X_test)[:, 1]
+        val_scores_by_model[model_name] = val_score
+        test_scores_by_model[model_name] = test_score
+        threshold_0_50 = classification_metrics_at_threshold(y_test, test_score, 0.50)
         rows.append(
             {
                 "dataset": spec.name,
@@ -286,32 +312,47 @@ def evaluate_dataset(
                 "positive_rate": float(y.mean()),
                 "used_source_columns": len(used_cols),
                 "model": model_name,
-                "threshold_0_50_precision": precision_score(y_test, y_pred, zero_division=0),
-                "threshold_0_50_recall": recall_score(y_test, y_pred, zero_division=0),
-                "threshold_0_50_f1": f1_score(y_test, y_pred, zero_division=0),
-                "threshold_0_50_f2": fbeta_score(y_test, y_pred, beta=2, zero_division=0),
-                "threshold_0_50_balanced_accuracy": balanced_accuracy_score(y_test, y_pred),
-                "roc_auc": roc_auc_score(y_test, score),
-                "pr_auc": average_precision_score(y_test, score),
+                "threshold_0_50_precision": threshold_0_50["precision"],
+                "threshold_0_50_recall": threshold_0_50["recall"],
+                "threshold_0_50_f1": threshold_0_50["f1"],
+                "threshold_0_50_f2": threshold_0_50["f2"],
+                "threshold_0_50_balanced_accuracy": threshold_0_50["balanced_accuracy"],
+                "roc_auc": roc_auc_score(y_test, test_score),
+                "pr_auc": average_precision_score(y_test, test_score),
             }
         )
 
-    sweep = threshold_sweep(np.asarray(y_test), scores_by_model)
-    best_f2 = sweep.sort_values(["model", "f2"], ascending=[True, False]).groupby("model").head(1)
-    best_f1 = sweep.sort_values(["model", "f1"], ascending=[True, False]).groupby("model").head(1)
+    sweep = threshold_sweep(np.asarray(y_val), val_scores_by_model)
+    best_f2 = sweep.sort_values(["model", "f2", "recall"], ascending=[True, False, False]).groupby("model").head(1)
+    best_f1 = sweep.sort_values(["model", "f1", "recall"], ascending=[True, False, False]).groupby("model").head(1)
     f2_lookup = best_f2.set_index("model").to_dict(orient="index")
     f1_lookup = best_f1.set_index("model").to_dict(orient="index")
 
     for row in rows:
         model_name = str(row["model"])
+        best_f2_threshold = float(f2_lookup[model_name]["threshold"])
+        best_f1_threshold = float(f1_lookup[model_name]["threshold"])
+        test_f2_metrics = classification_metrics_at_threshold(
+            y_test,
+            test_scores_by_model[model_name],
+            best_f2_threshold,
+        )
+        test_f1_metrics = classification_metrics_at_threshold(
+            y_test,
+            test_scores_by_model[model_name],
+            best_f1_threshold,
+        )
         row.update(
             {
-                "best_f2_threshold": f2_lookup[model_name]["threshold"],
-                "best_f2_precision": f2_lookup[model_name]["precision"],
-                "best_f2_recall": f2_lookup[model_name]["recall"],
-                "best_f2": f2_lookup[model_name]["f2"],
-                "best_f1_threshold": f1_lookup[model_name]["threshold"],
-                "best_f1": f1_lookup[model_name]["f1"],
+                "best_f2_threshold": best_f2_threshold,
+                "validation_best_f2": f2_lookup[model_name]["f2"],
+                "best_f2_precision": test_f2_metrics["precision"],
+                "best_f2_recall": test_f2_metrics["recall"],
+                "best_f2": test_f2_metrics["f2"],
+                "best_f2_predicted_positive_rate": test_f2_metrics["predicted_positive_rate"],
+                "best_f1_threshold": best_f1_threshold,
+                "validation_best_f1": f1_lookup[model_name]["f1"],
+                "best_f1": test_f1_metrics["f1"],
             }
         )
 

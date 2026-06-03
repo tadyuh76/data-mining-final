@@ -333,19 +333,61 @@ def threshold_sweep(
     return pd.DataFrame(rows)
 
 
-def evaluate_model(
+def evaluate_selected_thresholds(
+    y_test: np.ndarray,
+    test_scores_by_model: dict[str, np.ndarray],
+    selected_thresholds: pd.DataFrame,
+    score_column: str,
+) -> pd.DataFrame:
+    rows = []
+    for _, selected in selected_thresholds.iterrows():
+        model_name = str(selected["model"])
+        threshold = float(selected["threshold"])
+        row = metric_row(
+            model_name,
+            y_test,
+            test_scores_by_model[model_name],
+            np.nan,
+            threshold=threshold,
+        )
+        row[f"validation_{score_column}"] = float(selected[score_column])
+        rows.append(row)
+    frame = pd.DataFrame(rows)
+    if frame.empty:
+        return frame
+    return frame.sort_values(f"validation_{score_column}", ascending=False)
+
+
+def evaluate_model_with_validation(
+    name: str,
+    model,
+    X_fit: np.ndarray,
+    y_fit: np.ndarray,
+    X_val: np.ndarray,
+    X_test: np.ndarray,
+    y_test: np.ndarray,
+) -> tuple[dict[str, float | str], np.ndarray, np.ndarray, object]:
+    start = time.perf_counter()
+    model.fit(X_fit, y_fit)
+    runtime = time.perf_counter() - start
+    val_score = model.predict_proba(X_val)[:, 1]
+    test_score = model.predict_proba(X_test)[:, 1]
+    return metric_row(name, y_test, test_score, runtime), val_score, test_score, model
+
+
+def evaluate_model_on_test(
     name: str,
     model,
     X_train: np.ndarray,
     y_train: np.ndarray,
     X_test: np.ndarray,
     y_test: np.ndarray,
-) -> tuple[dict[str, float | str], np.ndarray, object]:
+) -> dict[str, float | str]:
     start = time.perf_counter()
     model.fit(X_train, y_train)
     runtime = time.perf_counter() - start
-    y_score = model.predict_proba(X_test)[:, 1]
-    return metric_row(name, y_test, y_score, runtime), y_score, model
+    test_score = model.predict_proba(X_test)[:, 1]
+    return metric_row(name, y_test, test_score, runtime)
 
 
 def plot_class_balance(y: pd.Series, path: Path) -> None:
@@ -473,7 +515,7 @@ def plot_threshold_sensitivity(thresholds: pd.DataFrame, figures_dir: Path) -> N
         plt.plot(group["threshold"], group["f2"], marker="o", linewidth=1.4, label=model_name)
     plt.xlabel("Decision threshold")
     plt.ylabel("F2 score")
-    plt.title("Độ nhạy F2 theo threshold")
+    plt.title("Độ nhạy F2 theo threshold trên validation")
     plt.legend(fontsize=8)
     plt.tight_layout()
     plt.savefig(figures_dir / "dm_threshold_sensitivity_f2.png", dpi=180)
@@ -504,7 +546,7 @@ def model_suite(stages: int, adaboost_estimators: int) -> dict[str, object]:
             random_state=RANDOM_STATE,
         ),
         "BalanceCascade_tuned": SimpleBalanceCascadeClassifier(
-            n_stages=4,
+            n_stages=2,
             adaboost_estimators=10,
             random_state=RANDOM_STATE,
         ),
@@ -517,25 +559,41 @@ def model_suite(stages: int, adaboost_estimators: int) -> dict[str, object]:
 
 
 def run_model_suite(
-    X_train: np.ndarray,
-    y_train: np.ndarray,
+    X_fit: np.ndarray,
+    y_fit: np.ndarray,
+    X_val: np.ndarray,
     X_test: np.ndarray,
     y_test: np.ndarray,
     stages: int,
     adaboost_estimators: int,
-) -> tuple[pd.DataFrame, dict[str, np.ndarray], dict[str, object]]:
+) -> tuple[pd.DataFrame, dict[str, np.ndarray], dict[str, np.ndarray], dict[str, object]]:
     rows = []
-    scores_by_model: dict[str, np.ndarray] = {}
+    val_scores_by_model: dict[str, np.ndarray] = {}
+    test_scores_by_model: dict[str, np.ndarray] = {}
     fitted_models = {}
 
     for name, model in model_suite(stages, adaboost_estimators).items():
         print(f"Đang train {name}...")
-        row, score, fitted = evaluate_model(name, clone(model), X_train, y_train, X_test, y_test)
+        row, val_score, test_score, fitted = evaluate_model_with_validation(
+            name,
+            clone(model),
+            X_fit,
+            y_fit,
+            X_val,
+            X_test,
+            y_test,
+        )
         rows.append(row)
-        scores_by_model[name] = score
+        val_scores_by_model[name] = val_score
+        test_scores_by_model[name] = test_score
         fitted_models[name] = fitted
 
-    return pd.DataFrame(rows).sort_values(by="pr_auc", ascending=False), scores_by_model, fitted_models
+    return (
+        pd.DataFrame(rows).sort_values(by="pr_auc", ascending=False),
+        val_scores_by_model,
+        test_scores_by_model,
+        fitted_models,
+    )
 
 
 def plot_controlled_scatter(X: np.ndarray, y: np.ndarray, title: str, path: Path) -> None:
@@ -583,14 +641,11 @@ def run_controlled_case(
         stratify=y,
         random_state=RANDOM_STATE,
     )
-    metrics, scores, _ = run_model_suite(
-        X_train,
-        y_train,
-        X_test,
-        y_test,
-        stages=stages,
-        adaboost_estimators=adaboost_estimators,
-    )
+    rows = []
+    for name, model in model_suite(stages, adaboost_estimators).items():
+        rows.append(evaluate_model_on_test(name, clone(model), X_train, y_train, X_test, y_test))
+
+    metrics = pd.DataFrame(rows).sort_values(by="pr_auc", ascending=False)
     metrics.insert(0, "case_id", case_id)
     metrics.insert(1, "class_sep", class_sep)
     metrics.insert(2, "flip_y", flip_y)
@@ -638,6 +693,7 @@ def main() -> None:
     parser.add_argument("--target", required=True, help="Cột target binary.")
     parser.add_argument("--positive-label", default=None, help="Giá trị nào của target được xem là positive class.")
     parser.add_argument("--test-size", type=float, default=0.25)
+    parser.add_argument("--validation-size", type=float, default=0.20)
     parser.add_argument("--max-categorical-cardinality", type=int, default=40)
     parser.add_argument("--max-missing-rate", type=float, default=0.80)
     parser.add_argument("--stages", type=int, default=6)
@@ -681,8 +737,16 @@ def main() -> None:
         random_state=RANDOM_STATE,
     )
 
-    train_frame = X_train_raw.copy()
-    train_frame[args.target] = y_train
+    X_fit_raw, X_val_raw, y_fit, y_val = train_test_split(
+        X_train_raw,
+        y_train,
+        test_size=args.validation_size,
+        stratify=y_train,
+        random_state=RANDOM_STATE,
+    )
+
+    train_frame = X_fit_raw.copy()
+    train_frame[args.target] = y_fit
     preprocessor, used_cols = build_preprocessor(
         train_frame,
         target=args.target,
@@ -691,7 +755,8 @@ def main() -> None:
     )
     pd.Series(used_cols, name="used_source_columns").to_csv(tables_dir / "dm_used_columns.csv", index=False)
 
-    X_train = np.asarray(preprocessor.fit_transform(X_train_raw), dtype=float)
+    X_fit = np.asarray(preprocessor.fit_transform(X_fit_raw), dtype=float)
+    X_val = np.asarray(preprocessor.transform(X_val_raw), dtype=float)
     X_test = np.asarray(preprocessor.transform(X_test_raw), dtype=float)
 
     validation = pd.DataFrame(
@@ -701,45 +766,57 @@ def main() -> None:
             {"check": "positive_rate_full", "value": float(y.mean()), "status": "pass"},
             {"check": "target_excluded_from_features", "value": args.target not in used_cols, "status": "pass"},
             {"check": "id_column_excluded", "value": "Unnamed: 0" not in used_cols, "status": "pass"},
-            {"check": "train_positive_rate", "value": float(np.mean(y_train)), "status": "pass"},
+            {"check": "train_positive_rate", "value": float(np.mean(y_fit)), "status": "pass"},
+            {"check": "validation_positive_rate", "value": float(np.mean(y_val)), "status": "pass"},
             {"check": "test_positive_rate", "value": float(np.mean(y_test)), "status": "pass"},
             {
                 "check": "stratified_split_close",
-                "value": abs(float(np.mean(y_train)) - float(np.mean(y_test))) < 0.002,
+                "value": max(
+                    abs(float(np.mean(y_fit)) - float(np.mean(y_val))),
+                    abs(float(np.mean(y_fit)) - float(np.mean(y_test))),
+                )
+                < 0.002,
                 "status": "pass",
             },
-            {"check": "no_nan_train_after_preprocess", "value": not np.isnan(X_train).any(), "status": "pass"},
+            {"check": "no_nan_train_after_preprocess", "value": not np.isnan(X_fit).any(), "status": "pass"},
+            {"check": "no_nan_validation_after_preprocess", "value": not np.isnan(X_val).any(), "status": "pass"},
             {"check": "no_nan_test_after_preprocess", "value": not np.isnan(X_test).any(), "status": "pass"},
-            {"check": "train_matrix_shape", "value": str(X_train.shape), "status": "pass"},
+            {"check": "train_matrix_shape", "value": str(X_fit.shape), "status": "pass"},
+            {"check": "validation_matrix_shape", "value": str(X_val.shape), "status": "pass"},
             {"check": "test_matrix_shape", "value": str(X_test.shape), "status": "pass"},
             {"check": "used_source_columns", "value": ", ".join(used_cols), "status": "pass"},
         ]
     )
     validation.to_csv(tables_dir / "dm_preprocessing_validation.csv", index=False)
 
-    metrics, scores_by_model, fitted_models = run_model_suite(
-        X_train,
-        y_train,
+    metrics, val_scores_by_model, test_scores_by_model, fitted_models = run_model_suite(
+        X_fit,
+        y_fit,
+        X_val,
         X_test,
         y_test,
         stages=args.stages,
         adaboost_estimators=args.adaboost_estimators,
     )
-    for name, score in scores_by_model.items():
+    for name, score in test_scores_by_model.items():
         plot_confusion(y_test, score, name, figures_dir)
 
     metrics.to_csv(tables_dir / "dm_model_metrics.csv", index=False)
-    pd.DataFrame(scores_by_model).to_csv(tables_dir / "dm_model_scores.csv", index=False)
-    plot_curves(y_test, scores_by_model, figures_dir)
+    pd.DataFrame(test_scores_by_model).to_csv(tables_dir / "dm_model_scores.csv", index=False)
+    plot_curves(y_test, test_scores_by_model, figures_dir)
 
-    thresholds = threshold_sweep(y_test, scores_by_model)
+    thresholds = threshold_sweep(y_val, val_scores_by_model)
     thresholds.to_csv(tables_dir / "dm_threshold_sweep.csv", index=False)
     plot_threshold_sensitivity(thresholds, figures_dir)
-    thresholds.sort_values(["model", "f1"], ascending=[True, False]).groupby("model").head(1).to_csv(
-        tables_dir / "dm_best_threshold_by_f1.csv", index=False
+    best_f1 = thresholds.sort_values(["model", "f1"], ascending=[True, False]).groupby("model").head(1)
+    best_f2 = thresholds.sort_values(["model", "f2"], ascending=[True, False]).groupby("model").head(1)
+    best_f1.to_csv(tables_dir / "dm_best_threshold_by_f1.csv", index=False)
+    best_f2.to_csv(tables_dir / "dm_best_threshold_by_f2.csv", index=False)
+    evaluate_selected_thresholds(y_test, test_scores_by_model, best_f1, "f1").to_csv(
+        tables_dir / "dm_selected_threshold_by_f1_test_metrics.csv", index=False
     )
-    thresholds.sort_values(["model", "f2"], ascending=[True, False]).groupby("model").head(1).to_csv(
-        tables_dir / "dm_best_threshold_by_f2.csv", index=False
+    evaluate_selected_thresholds(y_test, test_scores_by_model, best_f2, "f2").to_csv(
+        tables_dir / "dm_selected_threshold_by_f2_test_metrics.csv", index=False
     )
 
     for name, cascade in fitted_models.items():
