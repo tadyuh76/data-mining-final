@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
-"""
-Kiểm tra nhanh độ ổn định theo seed cho bài toán mất cân bằng lớp.
-"""
+"""Chạy lại pipeline với nhiều seed."""
 
 from __future__ import annotations
 

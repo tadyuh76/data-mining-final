@@ -1,14 +1,5 @@
 #!/usr/bin/env python3
-"""
-Quy trình thí nghiệm BalanceCascade.
-
-Các bước chính:
-- đọc dữ liệu cho bài toán phân loại nhị phân;
-- tiền xử lý theo train/test để tránh leakage;
-- đánh giá các mô hình nền;
-- chạy ensemble đơn giản theo hướng BalanceCascade;
-- xuất bảng metric và hình cần dùng cho báo cáo.
-"""
+"""Pipeline BalanceCascade cho bài Data Mining."""
 
 from __future__ import annotations
 
@@ -168,7 +159,7 @@ def build_preprocessor(
 
 @dataclass
 class SimpleEasyEnsembleClassifier(BaseEstimator, ClassifierMixin):
-    """Bản EasyEnsemble gọn làm mô hình nền dùng lấy mẫu giảm lớp lớn."""
+    """EasyEnsemble rút gọn để so sánh với BalanceCascade."""
 
     n_estimators: int = 6
     adaboost_estimators: int = 25
@@ -206,7 +197,7 @@ class SimpleEasyEnsembleClassifier(BaseEstimator, ClassifierMixin):
 
 @dataclass
 class SimpleBalanceCascadeClassifier(BaseEstimator, ClassifierMixin):
-    """Bản tự cài đặt phần chính của BalanceCascade theo từng vòng."""
+    """BalanceCascade rút gọn theo từng stage."""
 
     n_stages: int = 6
     adaboost_estimators: int = 25
@@ -221,7 +212,6 @@ class SimpleBalanceCascadeClassifier(BaseEstimator, ClassifierMixin):
         if len(pos_idx) == 0 or len(neg_idx) == 0:
             raise ValueError("Cần có đủ cả hai lớp.")
 
-        # Xác định lớp thiểu số và tập lớp đa số ban đầu.
         if len(pos_idx) <= len(neg_idx):
             minority_idx = pos_idx
             majority_pool = neg_idx.copy()
@@ -239,7 +229,6 @@ class SimpleBalanceCascadeClassifier(BaseEstimator, ClassifierMixin):
             if len(majority_pool) < max(2, sample_size // 2):
                 break
 
-            # Mỗi vòng học trên toàn bộ lớp thiểu số và một mẫu lớp đa số cân bằng.
             majority_sample_size = min(sample_size, len(majority_pool))
             sampled_majority = rng.choice(majority_pool, size=majority_sample_size, replace=False)
             train_idx = np.concatenate([minority_idx, sampled_majority])
@@ -249,7 +238,7 @@ class SimpleBalanceCascadeClassifier(BaseEstimator, ClassifierMixin):
             self.models_.append(model)
 
             if self.remove_correct_majority:
-                # Loại các điểm lớp đa số đã phân loại đúng để vòng sau tập trung vào điểm khó hơn.
+                # Stage sau chỉ giữ lại các mẫu majority bị dự đoán nhầm.
                 majority_pred = model.predict(X[majority_pool])
                 keep_mask = majority_pred != majority_label
                 removed = int((~keep_mask).sum())

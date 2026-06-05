@@ -1,6 +1,6 @@
 # Data Mining Final - BalanceCascade
 
-Project này dùng BalanceCascade cho bài toán phân loại mất cân bằng lớp trên dataset Give Me Some Credit.
+Bài này dùng BalanceCascade cho bài toán phân loại mất cân bằng lớp trên dataset Give Me Some Credit.
 
 BalanceCascade là thuật toán chính của bài. Logistic Regression balanced, RandomForest balanced và EasyEnsemble được dùng để đối chiếu, để thấy rõ trade-off giữa precision và recall.
 
@@ -44,14 +44,13 @@ python3 src/balance_cascade_seed_stability.py \
   --adaboost-estimators 25
 ```
 
-Chạy screening dataset:
+Hoặc chạy một lượt bằng notebook:
 
 ```bash
-python3 src/screen_balancecascade_datasets.py \
-  --sample-limit 200000 \
-  --test-size 0.25 \
-  --external-dir /tmp/balancecascade_datasets
+jupyter notebook notebooks/run_all.ipynb
 ```
+
+Trong VS Code có thể mở trực tiếp `notebooks/run_all.ipynb`, chọn đúng Python environment đã cài `requirements.txt`, rồi bấm Run All. Notebook này dùng để chạy lại toàn bộ pipeline trong một lượt.
 
 ## Chạy lại trên Windows PowerShell
 
@@ -80,12 +79,6 @@ Chạy seed stability:
 py src\balance_cascade_seed_stability.py --csv data\raw\cs-training.csv --target SeriousDlqin2yrs --positive-label 1 --stages 6 --adaboost-estimators 25
 ```
 
-Chạy screening dataset:
-
-```powershell
-py src\screen_balancecascade_datasets.py --sample-limit 200000 --test-size 0.25 --external-dir "$env:TEMP\balancecascade_datasets"
-```
-
 ## Output cần kiểm tra
 
 Sau khi chạy xong, xem kết quả trong `outputs/`. Một số file chính:
@@ -99,11 +92,9 @@ Sau khi chạy xong, xem kết quả trong `outputs/`. Một số file chính:
 - `outputs/tables/dm_balancecascade_stages.csv`
 - `outputs/tables/dm_balancecascade_tuned_stages.csv`
 - `outputs/tables/dm_controlled_case_metrics.csv`
-- `outputs/dataset_screening/dm_dataset_screening_summary.csv`
 - `outputs/figures/dm_precision_recall_curve.png`
 - `outputs/figures/dm_roc_curve.png`
 - `outputs/figures/dm_threshold_sensitivity_f2.png`
-- `outputs/figures/dm_dataset_screening_f2.png`
 
 ## Ghi chú ngắn
 
@@ -111,4 +102,5 @@ Sau khi chạy xong, xem kết quả trong `outputs/`. Một số file chính:
 - Imputer và scaler chỉ fit trên train/fit split để tránh leakage.
 - Threshold được chọn trên validation split, sau đó mới đánh giá trên test split.
 - Undersampling chỉ xảy ra trong lúc train. Validation và test giữ phân phối lớp thật.
-- BalanceCascade simple được giữ lại để minh họa rủi ro over-detect; bản tuned mới là cấu hình chính để phân tích trên Give Me Some Credit.
+- BalanceCascade simple được giữ lại để minh họa cấu hình quá nhạy; bản tuned mới là cấu hình chính để phân tích trên Give Me Some Credit.
+- Code chính nằm trong `src/`. Notebook chỉ dùng khi cần demo chạy một lượt.
