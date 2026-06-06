@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import time
 from pathlib import Path
 
 import numpy as np
@@ -131,11 +130,8 @@ def main() -> None:
 
         val_scores_by_model: dict[str, np.ndarray] = {}
         test_scores_by_model: dict[str, np.ndarray] = {}
-        runtimes: dict[str, float] = {}
         for name, model in model_suite(seed, args.stages, args.adaboost_estimators).items():
-            start = time.perf_counter()
             model.fit(X_fit, y_fit)
-            runtimes[name] = time.perf_counter() - start
             val_scores_by_model[name] = model.predict_proba(X_val)[:, 1]
             test_scores_by_model[name] = model.predict_proba(X_test)[:, 1]
 
@@ -151,7 +147,6 @@ def main() -> None:
                 name,
                 y_test,
                 test_scores_by_model[name],
-                runtimes[name],
                 threshold=float(selected["threshold"]),
             )
             row["seed"] = seed

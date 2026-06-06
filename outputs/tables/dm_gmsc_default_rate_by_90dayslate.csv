@@ -1,4 +1,4 @@
-NumberOfTimes90DaysLate,mean,size
+NumberOfTimes90DaysLate,positive_rate,rows
 0,0.0462650534370544,141662
 1,0.3366393286286477,5243
 2,0.49903536977491963,1555

@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -63,10 +62,14 @@ def ensure_dirs(base_dir: Path) -> tuple[Path, Path]:
 
 
 def normalize_binary_target(y: pd.Series, positive_label: str | None) -> pd.Series:
+    values = sorted(y.dropna().unique().tolist())
+    if len(values) != 2:
+        raise ValueError(
+            "Target phải có đúng 2 lớp sau khi bỏ NaN. "
+            f"Các giá trị tìm thấy: {values}"
+        )
+
     if positive_label is None:
-        values = sorted(y.dropna().unique().tolist())
-        if len(values) != 2:
-            raise ValueError("Target phải là binary hoặc cần truyền --positive-label.")
         positive = values[-1]
     else:
         positive = positive_label
@@ -77,7 +80,16 @@ def normalize_binary_target(y: pd.Series, positive_label: str | None) -> pd.Seri
                     positive = int(positive)
             except ValueError:
                 pass
-    return (y == positive).astype(int)
+        if positive not in values:
+            raise ValueError(
+                f"Positive label {positive!r} không có trong target. "
+                f"Các giá trị hợp lệ: {values}"
+            )
+
+    normalized = (y == positive).astype(int)
+    if normalized.nunique(dropna=False) != 2:
+        raise ValueError("Sau khi normalize, target không còn đủ cả hai lớp 0 và 1.")
+    return normalized
 
 
 def choose_columns(df: pd.DataFrame, target: str, max_categorical_cardinality: int, max_missing_rate: float) -> tuple[list[str], list[str], list[str]]:
@@ -272,7 +284,6 @@ def metric_row(
     name: str,
     y_true: np.ndarray,
     y_score: np.ndarray,
-    runtime: float,
     threshold: float = 0.5,
 ) -> dict[str, float | str]:
     y_pred = (y_score >= threshold).astype(int)
@@ -280,7 +291,7 @@ def metric_row(
     return {
         "model": name,
         "threshold": threshold,
-        "runtime_seconds": runtime,
+        "predicted_positive_rate": float(np.mean(y_pred)),
         "precision": precision_score(y_true, y_pred, zero_division=0),
         "recall": recall_score(y_true, y_pred, zero_division=0),
         "f1": f1_score(y_true, y_pred, zero_division=0),
@@ -336,7 +347,6 @@ def evaluate_selected_thresholds(
             model_name,
             y_test,
             test_scores_by_model[model_name],
-            np.nan,
             threshold=threshold,
         )
         row[f"validation_{score_column}"] = float(selected[score_column])
@@ -356,12 +366,10 @@ def evaluate_model_with_validation(
     X_test: np.ndarray,
     y_test: np.ndarray,
 ) -> tuple[dict[str, float | str], np.ndarray, np.ndarray, object]:
-    start = time.perf_counter()
     model.fit(X_fit, y_fit)
-    runtime = time.perf_counter() - start
     val_score = model.predict_proba(X_val)[:, 1]
     test_score = model.predict_proba(X_test)[:, 1]
-    return metric_row(name, y_test, test_score, runtime), val_score, test_score, model
+    return metric_row(name, y_test, test_score), val_score, test_score, model
 
 
 def evaluate_model_on_test(
@@ -372,11 +380,9 @@ def evaluate_model_on_test(
     X_test: np.ndarray,
     y_test: np.ndarray,
 ) -> dict[str, float | str]:
-    start = time.perf_counter()
     model.fit(X_train, y_train)
-    runtime = time.perf_counter() - start
     test_score = model.predict_proba(X_test)[:, 1]
-    return metric_row(name, y_test, test_score, runtime)
+    return metric_row(name, y_test, test_score)
 
 
 def plot_class_balance(y: pd.Series, path: Path) -> None:
@@ -456,14 +462,19 @@ def plot_gmsc_eda(df: pd.DataFrame, y: pd.Series, figures_dir: Path, tables_dir:
     late_col = "NumberOfTimes90DaysLate"
     target_col = "SeriousDlqin2yrs"
     if late_col in df.columns and target_col in df.columns:
-        rate = df.groupby(late_col)[target_col].agg(["mean", "size"]).reset_index()
+        rate = (
+            df.groupby(late_col)[target_col]
+            .agg(["mean", "size"])
+            .rename(columns={"mean": "positive_rate", "size": "rows"})
+            .reset_index()
+        )
         rate.to_csv(tables_dir / f"{prefix}_default_rate_by_90dayslate.csv", index=False)
-        plot_rate = rate[rate["size"] >= 20].head(15)
+        plot_rate = rate[rate["rows"] >= 20].head(15)
         plt.figure(figsize=(8, 5))
-        plt.bar(plot_rate[late_col].astype(str), plot_rate["mean"], color="#4C78A8")
+        plt.bar(plot_rate[late_col].astype(str), plot_rate["positive_rate"], color="#4C78A8")
         plt.xlabel("Số lần trễ hạn 90 ngày")
-        plt.ylabel("Tỷ lệ default")
-        plt.title("Tỷ lệ default theo số lần trễ hạn 90 ngày")
+        plt.ylabel("Tỷ lệ class 1")
+        plt.title("Tỷ lệ SeriousDlqin2yrs = 1 theo số lần trễ hạn 90 ngày")
         plt.tight_layout()
         plt.savefig(figures_dir / f"{prefix}_default_rate_by_90dayslate.png", dpi=180)
         plt.close()
@@ -709,11 +720,7 @@ def main() -> None:
         }
     )
     dataset_summary.to_csv(tables_dir / "dm_dataset_summary.csv", index=False)
-    df.isna().mean().sort_values(ascending=False).to_csv(tables_dir / "dm_missing_rates.csv", header=["missing_rate"])
-    y.value_counts().sort_index().to_csv(tables_dir / "dm_target_distribution.csv", header=["rows"])
 
-    plot_class_balance(y, figures_dir / "dm_class_distribution.png")
-    plot_missing(df, figures_dir / "dm_missing_values.png")
     if args.target == "SeriousDlqin2yrs":
         plot_gmsc_eda(df, y, figures_dir, tables_dir)
 
@@ -778,6 +785,9 @@ def main() -> None:
     )
     validation.to_csv(tables_dir / "dm_preprocessing_validation.csv", index=False)
 
+    if not args.skip_controlled_cases:
+        run_controlled_cases(figures_dir, tables_dir, args.stages, args.adaboost_estimators)
+
     metrics, val_scores_by_model, test_scores_by_model, fitted_models = run_model_suite(
         X_fit,
         y_fit,
@@ -791,7 +801,6 @@ def main() -> None:
         plot_confusion(y_test, score, name, figures_dir)
 
     metrics.to_csv(tables_dir / "dm_model_metrics.csv", index=False)
-    pd.DataFrame(test_scores_by_model).to_csv(tables_dir / "dm_model_scores.csv", index=False)
     plot_curves(y_test, test_scores_by_model, figures_dir)
 
     thresholds = threshold_sweep(y_val, val_scores_by_model)
@@ -816,9 +825,6 @@ def main() -> None:
         pd.DataFrame(cascade.stage_sizes_).to_csv(stage_path, index=False)
         if name == "BalanceCascade_simple":
             pd.DataFrame(cascade.stage_sizes_).to_csv(tables_dir / "dm_balancecascade_stages.csv", index=False)
-
-    if not args.skip_controlled_cases:
-        run_controlled_cases(figures_dir, tables_dir, args.stages, args.adaboost_estimators)
 
     print("Xong.")
     print(f"Figures nằm ở: {figures_dir}")

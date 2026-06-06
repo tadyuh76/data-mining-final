@@ -52,6 +52,15 @@ jupyter notebook notebooks/run_all.ipynb
 
 Trong VS Code có thể mở trực tiếp `notebooks/run_all.ipynb`, chọn đúng Python environment đã cài `requirements.txt`, rồi bấm Run All. Notebook này dùng để chạy lại toàn bộ pipeline trong một lượt.
 
+Flow chạy chính:
+
+1. Load dữ liệu và kiểm tra class imbalance.
+2. EDA và preprocessing, trong đó imputer/scaler chỉ fit trên train.
+3. Chạy controlled cases để thấy hành vi BalanceCascade trong case dễ và case overlap.
+4. Train các mô hình trên Give Me Some Credit.
+5. Chọn threshold trên validation, đánh giá trên test.
+6. Kiểm tra độ ổn định theo nhiều seed.
+
 ## Chạy lại trên Windows PowerShell
 
 ```powershell
@@ -103,4 +112,4 @@ Sau khi chạy xong, xem kết quả trong `outputs/`. Một số file chính:
 - Threshold được chọn trên validation split, sau đó mới đánh giá trên test split.
 - Undersampling chỉ xảy ra trong lúc train. Validation và test giữ phân phối lớp thật.
 - BalanceCascade simple được giữ lại để minh họa cấu hình quá nhạy; bản tuned mới là cấu hình chính để phân tích trên Give Me Some Credit.
-- Code chính nằm trong `src/`. Notebook chỉ dùng khi cần demo chạy một lượt.
+- Code chính nằm trong `src/`. Notebook dùng để demo cùng flow với report và hiển thị bảng/hình trực tiếp.
